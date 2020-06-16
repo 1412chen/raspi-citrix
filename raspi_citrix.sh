@@ -7,30 +7,63 @@ CITRIXSTOREFRONT=https://your.citrix.FQDN
 CITRIXCERTFILE=yourca.pem
 HDMIGROUP=2
 HDMIMODE=28
+TIMEZONE=Asia/Taipei
 
+# scsript environment
 HOME=/home/$USER
+debCount=`ls -1 *.deb 2>/dev/null | wc -l`
+if [ $debCount == 0 ]; then
+  echo "check Workspace App install file exist"
+  exit 1
+fi
 
 # boot environment
-sed -i "/#hdmi_force_hotplug/c\hdmi_force_hotplug=1" /boot/config.txt
-sed -i "/#hdmi_group/c\hdmi_group=$HDMIGROUP" /boot/config.txt
-sed -i "/#hdmi_mode/c\hdmi_mode=$HDMIMODE" /boot/config.txt
-echo "disable_splash=1
-avoid_warnings=1" >> /boot/config.txt
+sed -i "/[# ]*hdmi_force_hotplug/c\hdmi_force_hotplug=1" /boot/config.txt
+sed -i "/[# ]*hdmi_group/c\hdmi_group=$HDMIGROUP" /boot/config.txt
+sed -i "/[# ]*hdmi_mode/c\hdmi_mode=$HDMIMODE" /boot/config.txt
+sed -i "/[# ]*disable_splash=*//" /boot/config.txt
+sed -i "/[# ]*avoid_warnings=*//" /boot/config.txt
+cat >> /boot/config.txt << EOF
+disable_splash=1
+avoid_warnings=1
+EOF
 sed -i "s/console=tty1/console=tty6/" /boot/cmdline.txt
+sed -i "s/ loglevel=.//" /boot/cmdline.txt
+sed -i "s/ quiet//" /boot/cmdline.txt
+sed -i "s/ logo.nologo//" /boot/cmdline.txt
+sed -i "s/ vt.gloval_cursor_default=.//" /boot/cmdline.txt
 sed -i "/^/s/$/ loglevel=3 quiet logo.nologo vt.global_cursor_default=0/" /boot/cmdline.txt
 
 # update
 apt-get update
-apt-get -y dist-upgrade
+for i in (1..3); do
+  apt-get -y dist-upgrade
+done
 
 # install packages
-apt-get install -y --no-install-recommends xserver-xorg xinit icewm lightdm x11-xserver-utils
-apt-get install -y --no-install-recommends chromium-browser numlockx fonts-wqy-microhei xfonts-wqy xterm
-apt-get install -y pcsc-tools pcscd
+PACKAGES=(xserver-xorg xinit icewm lightdm x11-xserver-utils chromium-browser numlockx fonts-wqy-microhei xfonts-wqy xterm pcsc-tools pcscd fail2ban)
+DONE=0
+UPDATE_TIMES=0
+while [ $DONE != ${#PACKAGES[@]} ]
+do
+  apt-get install -y --no-install-recommends $(echo "${PACKAGES[*]}")
+  DONE=0
+  for PACKAGE in ${PACKAGES[*]}; do
+    STATE=$(dpkg-query -W -f='${Status}' ${PACKAGE} 2>/dev/null | grep -c "ok installed") 
+    DONE=$((DONE + STATE))
+  done
+  UPDATE_TIMES=${{UPDATE_TIMES+1))
+  if [ $UPDATE_TIMES > 10 ]; then
+    echo "check network"
+    exit 1
+  fi
+done
 
 # install Citrix ICA
 dpkg -i *.deb
-apt-get install -y -f --no-install-recommends
+for i in (1..3); do
+  apt-get install -y -f --no-install-recommends
+done
 
 apt-get auto-remove -y
 apt-get clean
@@ -48,10 +81,27 @@ cp first_time_login_desktop.sh $HOME
 chown $USER:$GROUP $HOME/*
 
 # setting environment
+## keyboard
+cat > /etc/default/keyboard << EOF
+XKBMODEL="pc105"
+XKBLAYOUT="us"
+XKBVARIANT=""
+XKBOPTIONS=""
+BACKSPACE="guess"
+EOF
+
+## timezone
+if [ -f "/usr/share/zoneinfo/$TIMEZONE" ]; then
+  rm /etc/localtime
+  echo "$TIMEZONE" > /etc/timezone
+  dpkg-reconfigure -f noninteractive tzdata
+fi
+
 ## icewm environment
 mkdir -p $HOME/.icewm
 chown $USER:$GROUP $HOME/.icewm
-echo "WorkspaceNames=\" 1 \"
+cat > $HOME/.icewm/preferences << EOF
+WorkspaceNames=" 1 "
 ShowTaskBar=0
 ShowSettingsMenu=0
 ShowFocusModeMenu=0
@@ -61,14 +111,17 @@ ShowHelp=0
 ShowAbout=0
 ShowRun=0
 ShowLogoutMenu=0
-ShowWindowList=0" > $HOME/.icewm/preferences
-echo "#!/bin/bash
+ShowWindowList=0
+EOF
+cat > $HOME/.icewm/startup << EOF
+#!/bin/bash
 xset s off
 xset -dpms
 xmodmap ~/.Xmodmap
 rm ~/Downloads/*.ica
+bash ~/first_time_login_desktop.sh
 chromium-browser ${CITRIXSTOREFRONT}
-¬/first_time_login_desktop.sh" > $HOME/.icewm/startup
+EOF
 echo "Theme=\"icedesert/default.theme\"" > $HOME/.icewm/theme
 echo "" > $HOME/.icewm/menu
 echo "key \"Alt+Ctrl+t\"   x-terminal-emulator" > $HOME/.icewm/keys
@@ -81,9 +134,11 @@ chown $USER:$GROUP $HOME/.icewm/keys
 
 ## chromium environment
 echo "CHROMIUM_FLAGS=\"\${CHROMIUM_FLAGS} --kiosk --incognito --check-for-update-interval=604800\"" >> /etc/chromium-browser/customizations/01-customize-settings
-echo "{
+cat > /etc/chromium-browser/policies/managed/no-translate.json << EOF
+{
   \"TranslateEnable\":false
-}" > /etc/chromium-browser/policies/managed/no-translate.json
+}
+EOF
 
 ## chromium ca
 if [ -f "./${CITRIXCERTFILE}" ]; then
@@ -91,7 +146,8 @@ if [ -f "./${CITRIXCERTFILE}" ]; then
 fi
 
 ## keyboard short key
-echo "keycode 67 = F1 F1 F1 F1 F1 F1
+cat >  .Xmodmap << EOF
+keycode 67 = F1 F1 F1 F1 F1 F1
 keycode 68 = F2 F2 F2 F2 F2 F2
 keycode 69 = F3 F3 F3 F3 F3 F3
 keycode 70 = F4 F4 F4 F4 F4 F4
@@ -102,7 +158,8 @@ keycode 74 = F8 F8 F8 F8 F8 F8
 keycode 75 = F9 F9 F9 F9 F9 F9
 keycode 76 = F10 F10 F10 F10 F10 F10
 keycode 95 = F11 F11 F11 F11 F11 F11
-keycode 96 = F12 F12 F12 F12 F12 F12" > $HOME/.Xmodmap
+keycode 96 = F12 F12 F12 F12 F12 F12
+EOF
 chown $USER:$GROUP $HOME/.Xmodmap
 
 ## sudoer
@@ -111,9 +168,11 @@ rm /etc/sudoers.d/010_pi-nopasswd
 ## auto login
 systemctl set-default graphical.target
 ln -fs /lib/systemd/system/getty@.service /etc/systemd/system/getty.target.wants/getty@tty1.service
-echo "[Service]
+cat > /etc/systemd/system/getty\@tty1.service.d/autologin.conf << EOF
+[Service]
 ExecStart=
-ExecStart=-/sbin/agetty --skip-login --noclear --noissue --login-options "-f $USER" %I \$TERM" > /etc/systemd/system/getty\@tty1.service.d/autologin.conf
+ExecStart=-/sbin/agetty --skip-login --noclear --noissue --login-options "-f $USER" %I \$TERM
+EOF
 sed /etc/lightdm/lightdm.conf -i -e "s/^\(#\|\)autologin-user=.*/autologin-user=$USER/"
 
 ## smart card service
@@ -133,4 +192,4 @@ reboot
 
 
 # unfinish
-#apt-get install ufw fail2ban
+#apt-get install ufw
