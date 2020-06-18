@@ -4,11 +4,13 @@ USER=user
 GROUP=user
 PASSWD=raspberry
 CITRIXSTOREFRONT=https://your.citrix.FQDN
-CITRIXCERTFILE=yourca.pem
+CITRIXCERTFILE=yourCA.pem
 HDMIGROUP=2
 HDMIMODE=28
 TIMEZONE=Asia/Taipei
+NTPServer=
 
+###################################################
 # scsript environment
 HOME=/home/$USER
 debCount=`ls -1 *.deb 2>/dev/null | wc -l`
@@ -16,35 +18,31 @@ if [ $debCount == 0 ]; then
   echo "check Workspace App install file exist"
   exit 1
 fi
-
-# boot environment
-sed -i "/[# ]*hdmi_force_hotplug/c\hdmi_force_hotplug=1" /boot/config.txt
-sed -i "/[# ]*hdmi_group/c\hdmi_group=$HDMIGROUP" /boot/config.txt
-sed -i "/[# ]*hdmi_mode/c\hdmi_mode=$HDMIMODE" /boot/config.txt
-sed -i "/[# ]*disable_splash=*//" /boot/config.txt
-sed -i "/[# ]*avoid_warnings=*//" /boot/config.txt
-cat >> /boot/config.txt << EOF
-disable_splash=1
-avoid_warnings=1
-EOF
-sed -i "s/console=tty1/console=tty6/" /boot/cmdline.txt
-sed -i "s/ loglevel=.//" /boot/cmdline.txt
-sed -i "s/ quiet//" /boot/cmdline.txt
-sed -i "s/ logo.nologo//" /boot/cmdline.txt
-sed -i "s/ vt.gloval_cursor_default=.//" /boot/cmdline.txt
-sed -i "/^/s/$/ loglevel=3 quiet logo.nologo vt.global_cursor_default=0/" /boot/cmdline.txt
+if [ "$USER" == "pi" ]; then
+  GROUP=pi
+fi
+###################################################
 
 # update
 apt-get update
-for i in (1..3); do
+DONE=1
+UPDATE_TIMES=0
+while (( $DONE != 0 ))
+do
   apt-get -y dist-upgrade
+  DONE=$(echo $?)
+  UPDATE_TIMES=$((UPDATE_TIMES+1))
+  if (( $UPDATE_TIMES > 9 )); then
+    echo "check newtwork"
+    exit 1
+  fi
 done
 
 # install packages
 PACKAGES=(xserver-xorg xinit icewm lightdm x11-xserver-utils chromium-browser numlockx fonts-wqy-microhei xfonts-wqy xterm pcsc-tools pcscd fail2ban)
 DONE=0
 UPDATE_TIMES=0
-while [ $DONE != ${#PACKAGES[@]} ]
+while (( $DONE != ${#PACKAGES[@]} ))
 do
   apt-get install -y --no-install-recommends $(echo "${PACKAGES[*]}")
   DONE=0
@@ -52,8 +50,8 @@ do
     STATE=$(dpkg-query -W -f='${Status}' ${PACKAGE} 2>/dev/null | grep -c "ok installed") 
     DONE=$((DONE + STATE))
   done
-  UPDATE_TIMES=${{UPDATE_TIMES+1))
-  if [ $UPDATE_TIMES > 10 ]; then
+  UPDATE_TIMES=$((UPDATE_TIMES+1))
+  if (( $UPDATE_TIMES > 9 )); then
     echo "check network"
     exit 1
   fi
@@ -61,26 +59,55 @@ done
 
 # install Citrix ICA
 dpkg -i *.deb
-for i in (1..3); do
+DONE=1
+UPDATE_TIMES=0
+while (( $DONE != 0 ))
+do
   apt-get install -y -f --no-install-recommends
+  DONE=$(echo $?)
+  UPDATE_TIMES=$((UPDATE_TIMES+1))
+  if (( $UPDATE_TIMES > 10 )); then
+    echo "check network"
+    exit 1
+  fi 
 done
 
 apt-get auto-remove -y
 apt-get clean
 
 # create user and disable pi
-groupadd $GROUP
-useradd $USER -g $GROUP
-usermod -a -G adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi $USER
+if [ "$USER" != "pi" ]; then
+  groupadd $GROUP
+  useradd $USER -g $GROUP
+  usermod -a -G adm,dialout,cdrom,sudo,audio,video,plugdev,games,users,input,netdev,gpio,i2c,spi $USER
+  mkdir $HOME
+  chown $USER:$GROUP $HOME
+fi
 echo $USER:$PASSWD | chpasswd
-mkdir $HOME
-chown $USER:$GROUP $HOME
-userdel pi
-chmod +x first_time_login_desktop.sh
-cp first_time_login_desktop.sh $HOME
-chown $USER:$GROUP $HOME/*
 
 # setting environment
+## boot environment
+sed -i "/[# ]*hdmi_force_hotplug/c\hdmi_force_hotplug=1" /boot/config.txt
+sed -i "/[# ]*hdmi_group/c\hdmi_group=$HDMIGROUP" /boot/config.txt
+sed -i "/[# ]*hdmi_mode/c\hdmi_mode=$HDMIMODE" /boot/config.txt
+sed -i "/[# ]*disable_splash=./d" /boot/config.txt
+sed -i "/[# ]*avoid_warnings=./d" /boot/config.txt
+cat >> /boot/config.txt << EOF
+disable_splash=1
+avoid_warnings=1
+EOF
+sed -i "s/console=tty1/console=tty6/" /boot/cmdline.txt
+sed -i "s/ loglevel=.//g" /boot/cmdline.txt
+sed -i "s/ quiet//g" /boot/cmdline.txt
+sed -i "s/ logo.nologo//g" /boot/cmdline.txt
+sed -i "s/ vt.global_cursor_default=.//g" /boot/cmdline.txt
+sed -i "/^/s/$/ loglevel=3 quiet logo.nologo vt.global_cursor_default=0/" /boot/cmdline.txt
+
+## NTP server
+if [ "${NTPServer}" != "" ]; then
+  sed -i "/[#]NTP=/c\NTP=${NTPServer}" /etc/systemd/timesyncd.conf
+fi
+
 ## keyboard
 cat > /etc/default/keyboard << EOF
 XKBMODEL="pc105"
@@ -119,7 +146,7 @@ xset s off
 xset -dpms
 xmodmap ~/.Xmodmap
 rm ~/Downloads/*.ica
-bash ~/first_time_login_desktop.sh
+~/first_time_login_desktop.sh
 chromium-browser ${CITRIXSTOREFRONT}
 EOF
 echo "Theme=\"icedesert/default.theme\"" > $HOME/.icewm/theme
@@ -136,17 +163,24 @@ chown $USER:$GROUP $HOME/.icewm/keys
 echo "CHROMIUM_FLAGS=\"\${CHROMIUM_FLAGS} --kiosk --incognito --check-for-update-interval=604800\"" >> /etc/chromium-browser/customizations/01-customize-settings
 cat > /etc/chromium-browser/policies/managed/no-translate.json << EOF
 {
-  \"TranslateEnable\":false
+  "TranslateEnabled":false
 }
 EOF
 
-## chromium ca
+## citrix ca
 if [ -f "./${CITRIXCERTFILE}" ]; then
   cp ${CITRIXCERTFILE} /opt/Citrix/ICAClient/keystore/cacerts/
 fi
 
+## citrix ica env
+sed -i "/^MultiMedia=/c\MultiMedia=On" /opt/Citrix/ICAClient/config/module.ini
+tar zxf icaclient.tgz -C $HOME/.ICAClient
+#LINK=$(awk '/WFClient/{ print NR; exit }' $HOME/.ICAClient/wfclient.ini)
+#sed -i "$((LINE+1))iEnableAudioInput=True" $HOME/.ICAClient/wfclient.ini
+#sed -i "$((LINE+2))iAllowAudioInput=True" $HOME/.ICAClient/wfclient.ini
+
 ## keyboard short key
-cat >  .Xmodmap << EOF
+cat >  $HOME/.Xmodmap << EOF
 keycode 67 = F1 F1 F1 F1 F1 F1
 keycode 68 = F2 F2 F2 F2 F2 F2
 keycode 69 = F3 F3 F3 F3 F3 F3
@@ -178,18 +212,21 @@ sed /etc/lightdm/lightdm.conf -i -e "s/^\(#\|\)autologin-user=.*/autologin-user=
 ## smart card service
 systemctl enable pcscd
 
-# prepare for next boot
-if [ $USER != "pi" ]; then
-  cp first_time_login_desktop.sh 
+# finalize, prepare for next boot
+chmod +x first_time_login_desktop.sh
+if [ $(echo '${PWD}') != $HOME ]; then
+  mv first_time_login_desktop.sh $HOME
 fi
-
-# finalize
-if [ $USER != pi ]; then 
-  cp first_login_desktop.sh 
-  rm -rf /home/pi
+chown $USER:$GROUP $HOME/*
+rm *.deb
+rm raspi_citrix.sh
+rm $CITRIXCERTFILE
+if [ "$USER" != "pi" ]; then
+  pkill -KILL -u pi && deluser --remove-home -f pi
 fi
 reboot
 
 
 # unfinish
 #apt-get install ufw
+#chromium CA
